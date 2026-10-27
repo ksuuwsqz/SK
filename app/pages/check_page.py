@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 
 from app.data.models import ValidationError
 from app.theme import COLOR_ERR, COLOR_MUTED, COLOR_OK
-
+from app.data.districts import get_all_districts
 
 class CheckPage(QWidget):
     """Страница проверки Excel-отчётов на формальные ошибки."""
@@ -39,10 +39,11 @@ class CheckPage(QWidget):
 
         self.district_filter = QComboBox()
         self.district_filter.addItem("Все районы")
+        self.district_filter.addItems(get_all_districts())  # <--- Загружаем все районы
         self.district_filter.currentIndexChanged.connect(self._apply_filters)
 
         self.severity_filter = QComboBox()
-        self.severity_filter.addItems(["Все типы", "error", "warning"])
+        self.severity_filter.addItems(["Все типы", "Ошибка", "Предупреждение"])
         self.severity_filter.currentIndexChanged.connect(self._apply_filters)
 
         refresh_btn = QPushButton("Обновить список")
@@ -76,18 +77,8 @@ class CheckPage(QWidget):
         """Устанавливает список ошибок и обновляет таблицу."""
         self._errors = list(errors)
 
-        # Заполняем фильтр районов
-        current = self.district_filter.currentText()
-        self.district_filter.blockSignals(True)
-        self.district_filter.clear()
-        self.district_filter.addItem("Все районы")
-        districts = sorted({e.district for e in self._errors})
-        self.district_filter.addItems(districts)
-        idx = self.district_filter.findText(current)
-        if idx >= 0:
-            self.district_filter.setCurrentIndex(idx)
-        self.district_filter.blockSignals(False)
-
+        # Фильтр районов уже заполнен в __init__,
+        # поэтому мы его не трогаем, а просто обновляем таблицу.
         self._refresh()
 
     # ---------- Внутренняя логика ----------
@@ -97,7 +88,14 @@ class CheckPage(QWidget):
 
     def _apply_filters(self) -> None:
         district = self.district_filter.currentText()
-        severity = self.severity_filter.currentText()
+        severity_text = self.severity_filter.currentText()
+        # Переводим русский текст обратно в системные значения
+        if severity_text == "Ошибка":
+            severity = "error"
+        elif severity_text == "Предупреждение":
+            severity = "warning"
+        else:
+            severity = "Все типы"
 
         filtered = [
             e for e in self._errors
