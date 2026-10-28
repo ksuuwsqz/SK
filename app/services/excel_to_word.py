@@ -1,37 +1,6 @@
 #!/usr/bin/env python3
 """
 excel_to_word.py — цифры из Excel-отчёта (форма № 230) -> текст доклада -> оформленный Word.
-
-Что делает:
-  1. Открывает итоговый отчёт (.xls или .xlsx) и находит графу «…в аварийном жилье»
-     по её названию (если не нашлась — берёт последнюю графу и предупреждает).
-  2. Находит строки показателей ПО НАЗВАНИЮ, а не по номеру: номера строк меняются
-     между редакциями формы (в 2024 г. — строка 140, в январе 2025 г. — 148, с сентября — 161).
-  3. Пустая ячейка = «нет данных», а не ноль.
-  4. Если есть отчёты за предыдущий период и за аналогичный период прошлого года (АППГ),
-     считает разницу и процент:  Δ = текущее − база;  % = Δ / база × 100.
-  5. Подставляет цифры в текст и сохраняет Word: Times New Roman 14, интервал 1,5,
-     отступ первой строки 1,25 см, выравнивание по ширине, поля 3/1,5/2/2 см, номера страниц.
-     Подставленные цифры подсвечиваются жёлтым — их легко проверить глазами.
-  6. Вместо встроенного текста можно взять свой шаблон Word (образец доклада)
-     с метками {{houses}}, {{houses_appg}} и т.п.; абзац с меткой {{TABLE}} заменяется сводной таблицей.
-
-Запуск:
-  pip install xlrd openpyxl python-docx
-
-  # предыдущий период и АППГ указать явно
-  python excel_to_word.py --current 1175_230_2512.XLS --previous 1175_230_2511.XLS \
-                          --appg 1175_230_2412.XLS --out Доклад.docx
-
-  # или пусть найдёт их сам в папках с отчётами (по имени файла 1175_230_ГГММ)
-  python excel_to_word.py --current "Отчеты 2025/Отчеты 12-2025 итоговые/1175_230_2512.XLS" \
-                          --search "Отчеты 2025" "Отчеты СК за 2023-2024"
-
-  # свой шаблон Word
-  python excel_to_word.py --current ... --search ... --template Образец.docx --out Доклад.docx
-
-  # посмотреть, какие строки и значения программа видит в файле
-  python excel_to_word.py --current 1175_230_2512.XLS --list-labels
 """
 import argparse
 import os
@@ -49,51 +18,50 @@ from docx.shared import Cm, Pt
 # =============================================================================
 # 1. НАСТРОЙКИ: какие показатели искать и как их называть в тексте
 # =============================================================================
-COLUMN_HINT = "аварийн"   # фрагмент названия графы
-OPTIONAL = {"funds_fed", "funds_reg"}   # строки есть только в редакции формы с сентября 2025 г.
+COLUMN_HINT = "в сфере восстановления"   # фрагмент названия графы
+OPTIONAL = set()   # Строки, которые есть не во всех формах
 
 # ключ, фрагменты названия строки (все должны входить в подпись), единица, название для таблицы
 INDICATORS = [
-    ("houses", ["Число домов, признанных аварийными"], "ед.",
-     "Число домов, признанных аварийными и нерасселённых"),
-    ("citizens", ["Число граждан, не переселенных из аварийного"], "чел.",
-     "Число граждан, не переселённых из аварийного жилищного фонда"),
-    ("citizens_5y", ["Число граждан, не переселенных", "ожидающих переселения более 5 лет"], "чел.",
-     "в т.ч. ожидающих переселения более 5 лет"),
-    ("court", ["неисполненных судебных решений о признании жилья аварийным"], "ед.",
-     "Неисполненные судебные решения о признании жилья аварийным и переселении"),
-    ("funds", ["Размер денежных средств, выделенных на расселение"], "тыс. руб.",
-     "Выделено средств на расселение"),
-    ("funds_fed", ["Размер денежных средств, выделенных на расселение", "из федерального бюджета"], "тыс. руб.",
-     "в т.ч. из федерального бюджета"),
-    ("funds_reg", ["Размер денежных средств, выделенных на расселение", "из регионального бюджета"], "тыс. руб.",
-     "в т.ч. из регионального бюджета"),
-    ("unspent", ["Размер неосвоенных денежных средств"], "тыс. руб.",
-     "Не освоено средств на переселение"),
+    ("messages", ["Поступило сообщений о преступлениях"], "ед.", "Поступило сообщений"),
+    ("refused", ["отказано в возбуждении дел"], "ед.", "Отказано в возбуждении дел"),
+    ("cancelled", ["Отменено постановлений о возбуждении уголовного дела"], "ед.", "Отменено постановлений о возбуждении УД"),
+    ("cancelled_refused", ["Отменено постановлений об отказе в возбуждении"], "ед.", "Отменено постановлений об отказе в возбуждении"),
+    ("in_progress", ["Находилось в производстве уголовных дел"], "ед.", "Находилось в производстве УД"),
+    ("to_court", ["Направлено уголовных дел в суд"], "ед.", "Направлено уголовных дел в суд"),
+    ("terminated", ["Прекращено уголовных дел"], "ед.", "Прекращено уголовных дел"),
+    ("houses", ["Число домов, признанных аварийными"], "ед.", "Число аварийных домов"),
+    ("citizens", ["Число граждан, не переселенных из аварийного"], "чел.", "Число граждан, не переселённых из аварийного жилья"),
+    ("court", ["Количество неисполненных судебных решений"], "ед.", "Неисполненные судебные решения"),
+    ("funds", ["Размер денежных средств, выделенных на расселение"], "руб.", "Выделено средств"),
+    ("unspent", ["Размер неосвоенных денежных средств, выделенных на переселение"], "тыс. руб.", "Не освоено средств"),
 ]
 
-# Встроенный текст доклада. {{ключ}} — подстановка; [[ ... ]] — необязательный фрагмент:
-# выпадает целиком, если внутри есть показатель без данных.
-# Для каждого ключа доступны: {{houses}} «1 118 ед.», {{houses_num}} «1 118»,
-# {{houses_appg}} «АППГ – 987 ед.; рост на 131 ед., или на 13,3 %», {{houses_prev}},
-# {{houses_appg_num}}, {{houses_appg_delta}}, {{houses_appg_pct}} (и то же с _prev_).
-# Общие: {{period}} «январь–декабрь 2025 г.», {{period_end}} «конец декабря 2025 г.», {{year}}.
-TITLE = "Восстановление прав граждан, проживающих в аварийном жилье"
+TITLE = (
+    "Рассмотрение сообщений и расследование уголовных дел о преступлениях в сфере "
+    "восстановления прав граждан, проживающих в аварийном жилье"
+)
+
 DEFAULT_TEXT = [
-    "По состоянию на {{period_end}} на территории Челябинской области число домов, признанных "
-    "аварийными и нерасселёнными, составило {{houses}}[[ ({{houses_appg}})]]. Число граждан, "
-    "не переселённых из аварийного жилищного фонда, — {{citizens}}[[ ({{citizens_appg}})]], "
-    "из них ожидающих переселения более 5 лет — {{citizens_5y}}[[ ({{citizens_5y_appg}})]].",
+    "За {{period}} в следственное управление поступило {{messages}} сообщений о преступлениях "
+    "в сфере восстановления прав граждан, проживающих в аварийном жилье[[ (АППГ – {{messages_appg_num}})]].",
 
-    "Количество неисполненных судебных решений о признании жилья аварийным и о переселении "
-    "жильцов — {{court}}[[ ({{court_appg}})]].",
+    "Решения об отказе в возбуждении уголовного дела принимались в {{refused}} случаях.",
 
-    "На расселение граждан из аварийного жилищного фонда в {{year}} году выделено {{funds}}"
-    "[[, в том числе из федерального бюджета — {{funds_fed}}, из регионального бюджета — {{funds_reg}}]]"
-    "[[ ({{funds_appg}})]]. Размер неосвоенных денежных средств — {{unspent}}[[ ({{unspent_appg}})]].",
+    "Отменено {{cancelled}} постановлений о возбуждении уголовного дела[[ (АППГ – {{cancelled_appg_num}})]]. "
+    "Постановления об отказе в возбуждении уголовного дела отменялись {{cancelled_refused}} раз.",
 
-    "[[По сравнению с предыдущим отчётным периодом число аварийных домов: {{houses_prev}}; "
-    "число не переселённых граждан: {{citizens_prev}}.]]",
+    "В производстве следователей следственного управления находилось {{in_progress}} "
+    "уголовных дел о преступлениях данной категории[[ (АППГ – {{in_progress_appg_num}})]].",
+
+    "Направлено в суд {{to_court}} уголовных дел[[ (АППГ – {{to_court_appg_num}})]].",
+
+    "Прекращено {{terminated}} уголовных дел о преступлениях данной категории[[ (АППГ – {{terminated_appg_num}})]].",
+
+    "На территории Челябинской области числится {{houses}} домов, признанных аварийными, "
+    "и {{citizens}} граждан, не переселённых из аварийного жилищного фонда. "
+    "Количество неисполненных судебных решений — {{court}}. "
+    "На расселение выделено {{funds}}.",
 ]
 
 # =============================================================================
@@ -107,14 +75,12 @@ MONTH_GEN = ["января", "февраля", "марта", "апреля", "м
 
 
 def clean(s):
-    """Подпись в одну строку: без переносов «несовершен- нолетних» и двойных пробелов."""
     s = str(s).replace("\xa0", " ")
     s = re.sub(r"(\w)-\s+(\w)", r"\1\2", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
 def key(s):
-    """Ключ для сравнения подписей: только буквы и цифры, без ссылок «(из строки 54)»."""
     s = clean(s).lower().replace("ё", "е")
     s = re.sub(r"\((?:из|по данным)?\s*стр[^)]*\)", "", s)
     return re.sub(r"[^a-zа-я0-9]", "", s)
@@ -126,7 +92,6 @@ def is_connector(s):
 
 
 def to_num(v):
-    """Ячейка -> число или None. Пустая ячейка — None («нет данных»), НЕ ноль."""
     if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
@@ -142,7 +107,6 @@ def to_num(v):
 
 
 def read_sheets(path):
-    """Все листы файла как списки строк (.xls — xlrd, .xlsx — openpyxl)."""
     if path.lower().endswith(".xls"):
         import xlrd
         wb = xlrd.open_workbook(path, logfile=open(os.devnull, "w"))
@@ -155,8 +119,6 @@ def read_sheets(path):
 
 
 class Report:
-    """Таблица формы: строка номеров граф (1, 2, 3…), слева от неё — «№ строки», ещё левее — подписи."""
-
     def __init__(self, path, column_hint=COLUMN_HINT):
         self.path = path
         self.warnings = []
@@ -189,7 +151,6 @@ class Report:
         return False
 
     def _read_rows(self):
-        """Полная подпись каждой строки с учётом иерархии: «Родитель / в т.ч. дочерняя»."""
         L = self.rownum_col
         levels, parent, self.rows = [""] * L, "", []
         for r in range(self.numbers_row + 1, len(self.g)):
@@ -219,7 +180,6 @@ class Report:
         return (2000 + int(m.group(1)), int(m.group(2))) if m else None
 
     def find(self, fragments):
-        """Строка, в подписи которой есть все фрагменты; из подходящих — самая «верхняя» (родительская)."""
         ks = [key(f) for f in fragments]
         hits = [x for x in self.rows if all(k in x["key"] for k in ks)]
         return min(hits, key=lambda x: (x["label"].count(" / "), len(x["key"]))) if hits else None
@@ -239,7 +199,6 @@ class Report:
 
 
 def find_report(search_dirs, code, form, year, month):
-    """Ищет файл <код>_<форма>_<ГГММ>.xls(x) во вложенных папках."""
     pat = re.compile(rf"^\s*{code}_{form}_{year % 100:02d}{month:02d}\s*\.xlsx?$", re.I)
     for d in search_dirs:
         for dp, _, files in os.walk(d):
@@ -248,12 +207,10 @@ def find_report(search_dirs, code, form, year, month):
                     return os.path.join(dp, f)
     return None
 
-
 # =============================================================================
 # 3. ЧИСЛА -> ТЕКСТ
 # =============================================================================
-NBSP = " "
-
+NBSP = " "
 
 def fnum(v):
     if v is None:
@@ -272,7 +229,6 @@ def fpct(p, signed=False):
 
 
 def change(cur, base):
-    """Δ = текущее − база; % = Δ / база × 100 (при базе 0 или «нет данных» процента нет)."""
     if cur is None or base is None:
         return None, None
     d = cur - base
@@ -284,7 +240,6 @@ def period_label(y, m):
 
 
 def build_context(cur, cur_period, bases):
-    """bases: {"prev": (значения, (год, мес)), "appg": (...)} -> словарь подстановок."""
     y, m = cur_period
     ctx = {"period": period_label(y, m), "period_end": f"конец {MONTH_GEN[m - 1]} {y} г.", "year": str(y)}
     for k, _, unit, _ in INDICATORS:
@@ -317,7 +272,6 @@ UNKNOWN = set()
 
 
 def render(text, ctx):
-    """Текст с метками -> [(кусок, это_подстановка)]. [[...]] выпадает, если внутри нет данных."""
     out = []
     for part in re.split(r"(\[\[.*?\]\])", text, flags=re.S):
         optional = part.startswith("[[") and part.endswith("]]")
@@ -339,17 +293,15 @@ def render(text, ctx):
             continue
         out += segs
     merged = [[t, h] for t, h in out if t]
-    for a, b in zip(merged, merged[1:]):          # «ед.» + «.» -> одна точка
+    for a, b in zip(merged, merged[1:]):
         if a[0].endswith(".") and b[0].startswith("."):
             b[0] = b[0][1:]
     return [(t, h) for t, h in merged if t]
-
 
 # =============================================================================
 # 4. WORD
 # =============================================================================
 FONT = "Times New Roman"
-
 
 def setup_document(doc):
     for s in doc.sections:
@@ -382,7 +334,7 @@ def add_page_number(section):
 def add_runs(paragraph, segs, highlight=True, like=None):
     for text, is_value in segs:
         r = paragraph.add_run(text)
-        if like is not None:            # повторить шрифт исходного прогона шаблона
+        if like is not None:
             r.font.name, r.font.size = like.font.name, like.font.size
             r.font.bold, r.font.italic, r.font.underline = like.font.bold, like.font.italic, like.font.underline
         if is_value and highlight:
@@ -415,20 +367,18 @@ def shade(cell, fill):
 
 
 def summary_table(doc, cur, bases, cur_period):
-    """Сводная таблица: значение, предыдущий период, АППГ, разницы и проценты."""
     prev_vals = bases.get("prev", (None, None))[0]
     appg_vals = bases.get("appg", (None, None))[0]
     prev_per = bases.get("prev", (None, None))[1]
     appg_per = bases.get("appg", (None, None))[1]
-    # в шапке — конкретные периоды сравнения, а не безымянные «Пред. период» / «АППГ»
     prev_head = f"Пред. период ({MONTH_NOM[prev_per[1] - 1]} {prev_per[0]})" if prev_per else "Пред. период"
     appg_head = f"АППГ ({MONTH_NOM[appg_per[1] - 1]} {appg_per[0]})" if appg_per else "АППГ"
     header = ["Показатель", "Ед.", period_label(*cur_period), prev_head, "Δ", "%", appg_head, "Δ", "%"]
-    widths = [3.8, 1.0, 1.9, 1.8, 1.6, 1.5, 1.8, 1.6, 1.4]       # см, в сумме 16,4 = ширина полосы набора
+    widths = [3.8, 1.0, 1.9, 1.8, 1.6, 1.5, 1.8, 1.6, 1.4]
     t = doc.add_table(rows=1, cols=len(header))
     t.style = "Table Grid"
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
-    trPr = t.rows[0]._tr.get_or_add_trPr()          # повторять шапку на новой странице
+    trPr = t.rows[0]._tr.get_or_add_trPr()
     hdr = OxmlElement("w:tblHeader")
     hdr.set(qn("w:val"), "true")
     trPr.append(hdr)
@@ -448,8 +398,8 @@ def summary_table(doc, cur, bases, cur_period):
     for i, txt in enumerate(header):
         t.rows[0].cells[i].text = txt
         shade(t.rows[0].cells[i], "D9E2F3")
-    t.autofit = False                                # фиксированная ширина граф (Word и LibreOffice)
-    mar = OxmlElement("w:tblCellMar")                # узкие внутренние поля ячеек — 0,1 см
+    t.autofit = False
+    mar = OxmlElement("w:tblCellMar")
     for side in ("left", "right"):
         el = OxmlElement(f"w:{side}")
         el.set(qn("w:w"), "57")
@@ -459,7 +409,7 @@ def summary_table(doc, cur, bases, cur_period):
     for gc, w in zip(t._tbl.tblGrid.findall(qn("w:gridCol")), widths):
         gc.set(qn("w:w"), str(int(w * 567)))
     for ri, r in enumerate(t.rows):
-        cant = OxmlElement("w:cantSplit")             # строка таблицы не рвётся между страницами
+        cant = OxmlElement("w:cantSplit")
         r._tr.get_or_add_trPr().append(cant)
         for i, c in enumerate(r.cells):
             c.width = Cm(widths[i])
@@ -516,7 +466,6 @@ def iter_paragraphs(doc):
 
 
 def build_from_template(template, cur, bases, cur_period, ctx, highlight, sources):
-    """Заполняет образец Word: метки {{...}} заменяются, шрифт абзаца сохраняется."""
     doc = Document(template)
     table_slot = None
     for p in list(iter_paragraphs(doc)):
@@ -527,7 +476,7 @@ def build_from_template(template, cur, bases, cur_period, ctx, highlight, source
             continue
         like = p.runs[0] if p.runs else None
         segs = render(p.text, ctx)
-        for r in list(p.runs):               # Word дробит текст на прогоны — собираем абзац заново
+        for r in list(p.runs):
             r._r.getparent().remove(r._r)
         add_runs(p, segs, highlight, like)
     if table_slot is not None:
@@ -536,20 +485,19 @@ def build_from_template(template, cur, bases, cur_period, ctx, highlight, source
         table_slot._p.getparent().remove(table_slot._p)
     return doc
 
-
 # =============================================================================
 # 5. ЗАПУСК
 # =============================================================================
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--current", required=True, help="итоговый отчёт за отчётный период, напр. 1175_230_2512.XLS")
+    ap.add_argument("--current", required=True, help="итоговый отчёт за отчётный период")
     ap.add_argument("--previous", help="отчёт за предыдущий период")
     ap.add_argument("--appg", help="отчёт за аналогичный период прошлого года")
     ap.add_argument("--search", nargs="*", default=[], help="папки, где искать предыдущий период и АППГ")
     ap.add_argument("--template", help="образец доклада .docx с метками {{...}}")
     ap.add_argument("--out", help="куда сохранить .docx")
-    ap.add_argument("--column", default=COLUMN_HINT, help="фрагмент названия графы (по умолчанию «аварийн»)")
-    ap.add_argument("--period", help="отчётный период ГГГГ-ММ, если его нет в имени файла (напр. 2026-03)")
+    ap.add_argument("--column", default=COLUMN_HINT, help="фрагмент названия графы")
+    ap.add_argument("--period", help="отчётный период ГГГГ-ММ")
     ap.add_argument("--no-highlight", action="store_true", help="не подсвечивать подстановки")
     ap.add_argument("--list-labels", action="store_true", help="показать строки и значения из файла и выйти")
     a = ap.parse_args(argv)
@@ -573,7 +521,7 @@ def main(argv=None):
 
     prev_path, appg_path = a.previous, a.appg
     if a.search:
-        if not prev_path:          # ближайший более ранний месяц того же года
+        if not prev_path:
             prev_path = next((p for mm in range(m - 1, 0, -1)
                               if (p := find_report(a.search, code, form, y, mm))), None)
         if not appg_path:
@@ -596,10 +544,9 @@ def main(argv=None):
         doc = build_from_template(a.template, cur, bases, (y, m), ctx, highlight, sources)
     else:
         doc = build_default(cur, bases, (y, m), ctx, highlight, sources)
-    out = a.out or f"Доклад_аварийное_жильё_{y}-{m:02d}.docx"
+    out = a.out or f"Доклад_{y}-{m:02d}.docx"
     doc.save(out)
 
-    # --- сводка в консоль
     print(f"Период: {period_label(y, m)}; графа: {cur_rep.col_title}")
     for k, _, unit, title in INDICATORS:
         c = cur[k]
