@@ -214,7 +214,7 @@ NBSP = " "
 
 def fnum(v):
     if v is None:
-        return "нет данных"
+        return "<нет данных>"
     if v < 0:
         return "−" + fnum(-v)
     s = f"{v:,.1f}" if isinstance(v, float) and not v.is_integer() else f"{int(round(v)):,}"
